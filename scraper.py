@@ -6,11 +6,19 @@ import json
 from datetime import datetime
 import csv
 
+
+## class level variables
 LINKEDIN_EMAIL = "jianhui.ben@icloud.com"
 LINKEDIN_PASSWORD = "bjh291808475"
-
 COOKIE_FILE = "linkedin_cookies.json"
 
+## job setting related variable
+search_title = "product manager"
+search_location = "United States"
+num_jobs_scrapped_per_run = 100
+
+
+job_data = []
 
 async def login_linkedin():
     async with async_playwright() as p:
@@ -35,12 +43,7 @@ async def login_linkedin():
         await page.goto("https://www.linkedin.com/jobs/search/")
         await page.wait_for_timeout(1000)
 
-        # Go to Jobs page
-        # await page.goto("https://www.linkedin.com/jobs/search/")
-
-                # Search settings
-        search_title = "product manager"
-        search_location = "United States"
+        # Search settings
         await page.get_by_role("combobox", name="Search by title, skill, or").fill(search_title)
         await page.get_by_role("combobox", name="City, state, or zip code").fill(search_location)
         await page.get_by_role("button", name="Search", exact=True).click()
@@ -54,36 +57,47 @@ async def login_linkedin():
         await page.get_by_role("button", name="Apply current filter to show").click()
         await page.wait_for_timeout(2000)
 
-        # Select all job cards using the reliable .job-card-list__actions-container
-        job_cards = await scroll_job_list(page, list_selector=".scaffold-layout__list-container")
-        print(f"Found {len(job_cards)} job cards")
+        page_id = 0
+        while len(job_data) < num_jobs_scrapped_per_run:
+            
+            ## if not the first page, then go to the next page
+            if len(job_data):
+                ## append &start = len(job_data) to the current url
+                await page.goto(page.url + f"&start={len(job_data)}")
+                await page.wait_for_timeout(2000)
+            
+            # Select all job cards using the reliable .job-card-list__actions-container
+            job_cards = await scroll_job_list(page, list_selector=".scaffold-layout__list-container")   
 
-        job_data = []
+            ## no more jobs available to scrape
+            if not len(job_cards):
+                break
 
-        for idx, actions_container in enumerate(job_cards):
-            print(f"\nClicking job card {idx + 1}...")
+            for idx, actions_container in enumerate(job_cards):
+                print(f"\nClicking job card {idx + 1} on page {page_id}...")
 
-            try:
-                await actions_container.scroll_into_view_if_needed()
-                await actions_container.click(timeout=5000, force=True)
-                await page.wait_for_timeout(1000)
+                try:
+                    await actions_container.scroll_into_view_if_needed()
+                    await actions_container.click(timeout=5000, force=True)
+                    await page.wait_for_timeout(1000)
 
-                # Get and parse current URL
-                current_url = page.url
-                job_id = None
-                if "currentJobId=" in current_url:
-                    job_id = current_url.split("currentJobId=")[-1].split("&")[0]
+                    # Get and parse current URL
+                    current_url = page.url
+                    job_id = None
+                    if "currentJobId=" in current_url:
+                        job_id = current_url.split("currentJobId=")[-1].split("&")[0]
 
-                print(f"Job ID: {job_id}")
-                print(f"URL: {current_url}")
+                    print(f"Job ID: {job_id}")
+                    print(f"URL: {current_url}")
 
-                job_data.append({
-                    "job_id": job_id or "",
-                    "url": current_url
-                })
+                    job_data.append({
+                        "job_id": job_id or "",
+                        "url": current_url
+                    })
 
-            except Exception as e:
-                print(f"⚠️ Failed to click job card {idx + 1}: {e}")
+                except Exception as e:
+                    print(f"⚠️ Failed to click job card {idx + 1}: {e}")
+            page_id += 1
 
         # Save results to CSV
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
