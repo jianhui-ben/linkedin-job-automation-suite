@@ -1,155 +1,194 @@
 import asyncio
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Page, Browser, BrowserContext
 import os
-import asyncio
 import json
 from datetime import datetime
 import csv
+from typing import List, Optional
+import logging
+from dataclasses import dataclass
 
 
-## class level variables
-LINKEDIN_EMAIL = "jianhui.ben@icloud.com"
-LINKEDIN_PASSWORD = "bjh291808475"
-COOKIE_FILE = "linkedin_cookies.json"
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-## job setting related variable
-search_title = "product manager"
-search_location = "United States"
-num_jobs_scrapped_per_run = 100
+@dataclass
+class SearchConfig:
+    """Configuration for job search"""
+    title: str
+    location: str
+    num_jobs: int
+    time_filter: str = "Past 24 hours"
 
+@dataclass
+class ScrapingResult:
+    """Container for scraped job data"""
+    job_id: str
+    url: str
 
-job_data = []
+class LinkedInJobScraper:
+    """A class to scrape LinkedIn job listings"""
+    
+    def __init__(self, cookie_file: str, search_config: SearchConfig, 
+                 headless: bool = False, output_dir: str = "results"):
+        self.cookie_file = cookie_file
+        self.search_config = search_config
+        self.headless = headless
+        self.output_dir = output_dir
+        self.job_data: List[ScrapingResult] = []
+        self._browser: Optional[Browser] = None
+        self._context: Optional[BrowserContext] = None
+        self._page: Optional[Page] = None
 
-async def login_linkedin():
-    async with async_playwright() as p:
-        # browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
-        browser = await p.chromium.launch(headless=False, args=["--no-sandbox"])
+    async def __aenter__(self):
+        """Async context manager entry"""
+        await self.initialize()
+        return self
 
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit"""
+        await self.cleanup()
 
-        # page = await browser.new_page()
-        # await page.goto("https://www.linkedin.com/login")
-
-        # await page.fill("input#username", LINKEDIN_EMAIL)
-        # await page.fill("input#password", LINKEDIN_PASSWORD)
-        # await page.click("button[type=submit]")
-
-        context = await browser.new_context()
+    async def initialize(self):
+        """Initialize the browser and context"""
+        playwright = await async_playwright().start()
+        self._browser = await playwright.chromium.launch(
+            headless=self.headless,
+            args=["--no-sandbox"]
+        )
+        self._context = await self._browser.new_context()
+        
         # Load cookies
-        with open(COOKIE_FILE, "r") as f:
-            cookies = json.load(f)
-        await context.add_cookies(cookies)
+        try:
+            with open(self.cookie_file, "r") as f:
+                cookies = json.load(f)
+            await self._context.add_cookies(cookies)
+        except FileNotFoundError:
+            logger.warning(f"Cookie file {self.cookie_file} not found. Proceeding without cookies.")
 
-        page = await context.new_page()
-        await page.goto("https://www.linkedin.com/jobs/search/")
-        await page.wait_for_timeout(1000)
+        self._page = await self._context.new_page()
 
-        # Search settings
-        await page.get_by_role("combobox", name="Search by title, skill, or").fill(search_title)
-        await page.get_by_role("combobox", name="City, state, or zip code").fill(search_location)
-        await page.get_by_role("button", name="Search", exact=True).click()
+    async def cleanup(self):
+        """Clean up resources"""
+        if self._browser:
+            await self._browser.close()
 
-        # Apply "Past 24 hours" filter 
-        await page.wait_for_timeout(3000)
-        await page.get_by_role("button", name="Date posted filter. Clicking").click()
-        await page.wait_for_timeout(1000)
-        await page.locator("label").filter(has_text="Past 24 hours Filter by Past").click()
-        await page.wait_for_timeout(1000)
-        await page.get_by_role("button", name="Apply current filter to show").click()
-        await page.wait_for_timeout(2000)
+    async def navigate_to_jobs_page(self):
+        """Navigate to LinkedIn jobs search page"""
+        await self._page.goto("https://www.linkedin.com/jobs/search/")
+        await self._page.wait_for_timeout(1000)
 
-        page_id = 0
-        while len(job_data) < num_jobs_scrapped_per_run:
+    async def perform_search(self):
+        """Perform the job search with configured parameters"""
+        await self._page.get_by_role("combobox", name="Search by title, skill, or").fill(
+            self.search_config.title
+        )
+        await self._page.get_by_role("combobox", name="City, state, or zip code").fill(
+            self.search_config.location
+        )
+        await self._page.get_by_role("button", name="Search", exact=True).click()
+        await self._page.wait_for_timeout(3000)
+
+    async def apply_time_filter(self):
+        """Apply the time filter to the search results"""
+        await self._page.get_by_role("button", name="Date posted filter. Clicking").click()
+        await self._page.wait_for_timeout(1000)
+        await self._page.locator("label").filter(
+            has_text=f"{self.search_config.time_filter} Filter by {self.search_config.time_filter}"
+        ).click()
+        await self._page.wait_for_timeout(1000)
+        await self._page.get_by_role("button", name="Apply current filter to show").click()
+        await self._page.wait_for_timeout(2000)
+
+    async def scroll_job_list(self) -> List[ScrapingResult]:
+        """Scroll through the job list and collect job data"""
+        logger.info("Scrolling through job list container...")
+        job_cards = []
+        
+        while len(self.job_data) < self.search_config.num_jobs:
+            current_cards = await self._page.locator("li.scaffold-layout__list-item").all()
             
-            ## if not the first page, then go to the next page
-            if len(job_data):
-                ## append &start = len(job_data) to the current url
-                await page.goto(page.url + f"&start={len(job_data)}")
-                await page.wait_for_timeout(2000)
-            
-            # Select all job cards using the reliable .job-card-list__actions-container
-            job_cards = await scroll_job_list(page, list_selector=".scaffold-layout__list-container")   
+            if not current_cards:
+                logger.warning("⚠️ No job cards found yet. Waiting...")
+                await asyncio.sleep(1)
+                continue
 
-            ## no more jobs available to scrape
-            if not len(job_cards):
-                break
-
-            for idx, actions_container in enumerate(job_cards):
-                print(f"\nClicking job card {idx + 1} on page {page_id}...")
+            for card in current_cards:
+                if len(self.job_data) >= self.search_config.num_jobs:
+                    break
 
                 try:
-                    await actions_container.scroll_into_view_if_needed()
-                    await actions_container.click(timeout=5000, force=True)
-                    await page.wait_for_timeout(1000)
+                    await card.scroll_into_view_if_needed()
+                    await card.click(timeout=5000, force=True)
+                    await self._page.wait_for_timeout(1000)
 
-                    # Get and parse current URL
-                    current_url = page.url
+                    current_url = self._page.url
                     job_id = None
                     if "currentJobId=" in current_url:
                         job_id = current_url.split("currentJobId=")[-1].split("&")[0]
 
-                    print(f"Job ID: {job_id}")
-                    print(f"URL: {current_url}")
-
-                    job_data.append({
-                        "job_id": job_id or "",
-                        "url": current_url
-                    })
+                    self.job_data.append(ScrapingResult(
+                        job_id=job_id or "",
+                        url=current_url
+                    ))
+                    logger.info(f"Scraped job {len(self.job_data)}/{self.search_config.num_jobs}")
 
                 except Exception as e:
-                    print(f"⚠️ Failed to click job card {idx + 1}: {e}")
-            page_id += 1
+                    logger.error(f"Failed to process job card: {e}")
 
-        # Save results to CSV
+            if len(current_cards) == len(job_cards):
+                break
+
+            job_cards = current_cards
+            await asyncio.sleep(2)
+
+        return self.job_data
+
+    def save_results(self):
+        """Save the scraped results to a CSV file"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"linkedin_jobs_{search_title.replace(' ', '_')}_{search_location.replace(' ', '_')}_{timestamp}.csv"
-        os.makedirs("results", exist_ok=True)
-        filepath = os.path.join("results", filename)
+        filename = f"linkedin_jobs_{self.search_config.title.replace(' ', '_')}_{self.search_config.location.replace(' ', '_')}_{timestamp}.csv"
+        
+        os.makedirs(self.output_dir, exist_ok=True)
+        filepath = os.path.join(self.output_dir, filename)
 
         with open(filepath, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=["job_id", "url"])
             writer.writeheader()
-            writer.writerows(job_data)
+            writer.writerows([{"job_id": job.job_id, "url": job.url} for job in self.job_data])
 
-        print(f"✅ Saved {len(job_data)} jobs to: {filepath}")
+        logger.info(f"✅ Saved {len(self.job_data)} jobs to: {filepath}")
 
-        # await page.pause()
+    async def scrape(self):
+        """Main method to perform the scraping process"""
+        try:
+            await self.navigate_to_jobs_page()
+            await self.perform_search()
+            await self.apply_time_filter()
+            await self.scroll_job_list()
+            self.save_results()
+        except Exception as e:
+            logger.error(f"An error occurred during scraping: {e}")
+            raise
 
-        await browser.close()
-
-async def scroll_job_list(page, list_selector=".scaffold-layout__list-container", job_card_selector="li.scaffold-layout__list-item"):
-    print("🔁 Scrolling through job list container by last job card...")
-
-    while True:
-        job_cards = await page.locator(job_card_selector).all()
-        current_count = len(job_cards)
-        print(f"📦 Currently found {current_count} job cards")
-
-        if current_count == 0:
-            print("⚠️ No job cards found yet. Waiting...")
-            await asyncio.sleep(1)
-            continue
-
-        last_job_card = job_cards[-1]
-        await last_job_card.scroll_into_view_if_needed()
-        print("🔽 Scrolled last job card into view.")
-
-        await asyncio.sleep(2)
-
-        new_job_cards = await page.locator(job_card_selector).all()
-        new_count = len(new_job_cards)
-
-        if new_count == current_count:
-            print("✅ No new job cards loaded. Reached bottom.")
-            break
-
-    return job_cards
-
-
-        
 async def main():
-    await login_linkedin()
-
-
+    # Example usage
+    search_config = SearchConfig(
+        title="product manager",
+        location="United States",
+        num_jobs=30
+    )
+    
+    async with LinkedInJobScraper(
+        cookie_file="linkedin_cookies.json",
+        search_config=search_config,
+        headless=False
+    ) as scraper:
+        await scraper.scrape()
 
 if __name__ == "__main__":
     asyncio.run(main())
