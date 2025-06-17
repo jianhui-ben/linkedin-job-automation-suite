@@ -8,6 +8,7 @@ from typing import List, Optional
 import logging
 from dataclasses import dataclass
 from utils import browser_utils
+import sqlite3
 
 
 # Configure logging
@@ -16,6 +17,9 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Define database file
+DB_FILE = "linkedin_jobs.db"
 
 @dataclass
 class SearchConfig:
@@ -47,16 +51,21 @@ class LinkedInJobScraper:
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
+        self._db_conn: Optional[sqlite3.Connection] = None  # Database connection
+        self._db_cursor: Optional[sqlite3.Cursor] = None    # Database cursor
+        self.table_name: str = "" # To store the dynamically generated table name
 
     async def __aenter__(self):
         """Async context manager entry"""
         await self.initialize()
+        self.connect_db() # Connect to DB on entry
+        await self.create_jobs_table() # Create table for this run
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit"""
         await self.cleanup()
-
+        self.close_db() # Close DB on exit
 
     async def initialize(self):
         """Initialize the browser and context"""
@@ -219,26 +228,85 @@ class LinkedInJobScraper:
 
         return self.job_data
 
-    def save_results(self):
-        """Save the scraped results to a CSV file"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"linkedin_jobs_{self.search_config.title.replace(' ', '_')}_{self.search_config.location.replace(' ', '_')}_{timestamp}.csv"
+    def connect_db(self):
+        """Connect to the SQLite database."""
+        try:
+            self._db_conn = sqlite3.connect(DB_FILE)
+            self._db_cursor = self._db_conn.cursor()
+            logger.info(f"Connected to database: {DB_FILE}")
+        except sqlite3.Error as e:
+            logger.error(f"Database connection error: {e}")
+            self._db_conn = None
+            self._db_cursor = None
+
+    def close_db(self):
+        """Close the database connection."""
+        if self._db_conn:
+            self._db_conn.close()
+            logger.info("Database connection closed.")
+
+    async def create_jobs_table(self):
+        """Create a new table for the scraped jobs, named after search parameters and timestamp."""
+        # Generate a unique table name based on search config and current timestamp
+        sanitized_title = self.search_config.title.replace(' ', '_').replace('/', '_').replace('\\', '_').replace('.', '')
+        sanitized_location = self.search_config.location.replace(' ', '_').replace('/', '_').replace('\\', '_').replace('.', '')
+        self.table_name = f"jobs_{sanitized_title}_{sanitized_location}"
         
-        os.makedirs(self.output_dir, exist_ok=True)
-        filepath = os.path.join(self.output_dir, filename)
+        # SQL to create table if it doesn't exist
+        create_table_sql = f"""
+        CREATE TABLE IF NOT EXISTS "{self.table_name}" (
+            job_id TEXT PRIMARY KEY,
+            url TEXT,
+            job_title TEXT,
+            company_name TEXT,
+            job_description TEXT,
+            scraped_date TEXT,
+            scraped_timestamp TEXT
+        );
+        """
+        try:
+            if self._db_cursor:
+                self._db_cursor.execute(create_table_sql)
+                self._db_conn.commit()
+                logger.info(f"Table '{self.table_name}' created or already exists.")
+            else:
+                logger.error("Database cursor not initialized. Cannot create table.")
+        except sqlite3.Error as e:
+            logger.error(f"Error creating table '{self.table_name}': {e}")
 
-        with open(filepath, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["job_id", "url", "job_title", "company_name", "job_description"])
-            writer.writeheader()
-            writer.writerows([{
-                "job_id": job.job_id,
-                "url": job.url,
-                "job_title": job.job_title,
-                "company_name": job.company_name,
-                "job_description": job.job_description
-            } for job in self.job_data])
+    def save_results(self):
+        """Save the scraped results to the SQLite database."""
+        if not self._db_cursor or not self.table_name:
+            logger.error("Database not connected or table name not set. Cannot save results.")
+            return
 
-        logger.info(f"✅ Saved {len(self.job_data)} jobs to: {filepath}")
+        scraped_date = datetime.now().strftime("%Y-%m-%d")
+        scraped_timestamp = datetime.now().strftime("%H:%M:%S")
+
+        for job in self.job_data:
+            try:
+                # Check if job_id already exists
+                self._db_cursor.execute(
+                    f'SELECT job_id FROM "{self.table_name}" WHERE job_id = ?',
+                    (job.job_id,)
+                )
+                existing_job = self._db_cursor.fetchone()
+
+                if existing_job:
+                    logger.info(f"Job ID {job.job_id} already exists in table '{self.table_name}'. Ignoring.")
+                else:
+                    insert_sql = f"""
+                    INSERT INTO "{self.table_name}" (job_id, url, job_title, company_name, job_description, scraped_date, scraped_timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?);
+                    """
+                    self._db_cursor.execute(
+                        insert_sql,
+                        (job.job_id, job.url, job.job_title, job.company_name, job.job_description, scraped_date, scraped_timestamp)
+                    )
+                    self._db_conn.commit()
+                    logger.info(f"✅ Saved job '{job.job_title}' ({job.job_id}) to database table '{self.table_name}'.")
+            except sqlite3.Error as e:
+                logger.error(f"Error saving job {job.job_id} to database: {e}")
 
     async def scrape(self):
         """Main method to perform the scraping process"""
