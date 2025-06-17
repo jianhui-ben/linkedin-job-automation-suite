@@ -26,7 +26,7 @@ async def main():
     # await page.pause()
 
     llm = ChatOpenAI(
-    openai_api_key="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",
+    openai_api_key="",
     openai_api_base="https://openrouter.ai/api/v1",
     model_name="deepseek/deepseek-chat-v3-0324:free"
     )

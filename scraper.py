@@ -176,14 +176,6 @@ class LinkedInJobScraper:
             
             # Extract job description
             job_description = await self.extract_job_description(current_url)
-
-
-            logger.info(job_url)
-            logger.info(job_description)
-            logger.info(company_name)
-            logger.info(job_title)
-            await self._page.pause()
-
             return ScrapingResult(
                 job_id=job_id or "",
                 url=job_url,
