@@ -7,6 +7,7 @@ import csv
 from typing import List, Optional
 import logging
 from dataclasses import dataclass
+from utils import browser_utils
 
 
 # Configure logging
@@ -29,6 +30,9 @@ class ScrapingResult:
     """Container for scraped job data"""
     job_id: str
     url: str
+    job_title: str
+    company_name: str
+    job_description: str
 
 class LinkedInJobScraper:
     """A class to scrape LinkedIn job listings"""
@@ -53,24 +57,13 @@ class LinkedInJobScraper:
         """Async context manager exit"""
         await self.cleanup()
 
+
     async def initialize(self):
         """Initialize the browser and context"""
-        playwright = await async_playwright().start()
-        self._browser = await playwright.chromium.launch(
-            headless=self.headless,
-            args=["--no-sandbox"]
+        self._browser, self._context, self._page = await browser_utils.initialize_browser(
+            cookie_file=self.cookie_file,
+            headless=self.headless
         )
-        self._context = await self._browser.new_context()
-        
-        # Load cookies
-        try:
-            with open(self.cookie_file, "r") as f:
-                cookies = json.load(f)
-            await self._context.add_cookies(cookies)
-        except FileNotFoundError:
-            logger.warning(f"Cookie file {self.cookie_file} not found. Proceeding without cookies.")
-
-        self._page = await self._context.new_page()
 
     async def cleanup(self):
         """Clean up resources"""
@@ -104,6 +97,105 @@ class LinkedInJobScraper:
         await self._page.get_by_role("button", name="Apply current filter to show").click()
         await self._page.wait_for_timeout(2000)
 
+    async def extract_text_content(self, selector: str, error_message: str, current_url: str) -> str:
+        """Common method to extract text content from a selector"""
+        element = self._page.locator(selector).first
+        if await element.count() > 0:
+            return (await element.text_content()).strip()
+        else:
+            logger.warning(f"{error_message} for URL: {current_url}")
+            return ""
+    
+    async def extract_job_title(self, current_url: str) -> str:
+        container = self._page.locator("div[class*='job-details-jobs-unified-top-card__job-title']").first
+        job_title = ""
+        if await container.count() > 0:
+            job_title_node = container.locator("a").first
+
+            if await job_title_node.count() > 0:
+                job_title = (await job_title_node.text_content()).strip()
+            else:
+                job_title = ""
+                logger.warning(f"Could not find <a> inside job title container for URL: {current_url}")
+        else:
+            logger.warning(f"Could not find job title container for URL: {current_url}")
+        return job_title
+
+    async def extract_job_description(self, current_url: str) -> str:
+        """Extract job description from the page"""
+        job_description = ""
+        # Step 1: Locate the "About the job" section heading
+        heading = self._page.locator("h2:text-is('About the job')").first
+        
+        if await heading.count() > 0:
+            # Step 2: Get the parent container
+            container = heading.locator("xpath=following-sibling::div").first
+            
+            if await container.count() > 0:
+                # Step 3: Extract all paragraphs inside the container
+                paragraphs = container.locator("p").all()
+                texts = []
+                for p in await paragraphs:
+                    text = await p.text_content()
+                    if text:
+                        texts.append(text)
+                job_description = "\n".join(texts).strip()
+            else:
+                logger.warning(f"Could not find description container for URL: {current_url}")
+        else:
+            logger.warning(f"Could not find 'About the job' heading for URL: {current_url}")
+        return job_description
+
+    async def process_job_card(self, card) -> Optional[ScrapingResult]:
+        """Process a single job card and extract all relevant information"""
+        try:
+            await card.scroll_into_view_if_needed()
+            await card.click(timeout=5000, force=True)
+            await self._page.wait_for_timeout(1000) # Give page time to load content after click
+
+            current_url = self._page.url
+            job_id = None
+            job_url = current_url
+            
+            # Extract job ID and construct standard LinkedIn job URL
+            if "currentJobId=" in current_url:
+                job_id = current_url.split("currentJobId=")[-1].split("&")[0]
+                job_url = f"https://www.linkedin.com/jobs/view/{job_id}/"
+            else:
+                logger.warning(f"Could not extract job ID from URL: {current_url}. Using original URL as fallback.")
+
+            # Extract job title
+            job_title = await self.extract_job_title(current_url)
+            
+            # Extract company name
+            company_name = await self.extract_text_content(
+                "div[class*='p-card__company-name'] a",
+                "Could not find company name",
+                current_url
+            )
+            
+            # Extract job description
+            job_description = await self.extract_job_description(current_url)
+
+
+            logger.info(job_url)
+            logger.info(job_description)
+            logger.info(company_name)
+            logger.info(job_title)
+            await self._page.pause()
+
+            return ScrapingResult(
+                job_id=job_id or "",
+                url=job_url,
+                job_title=job_title,
+                company_name=company_name,
+                job_description=job_description
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to process job card for URL: {current_url}: {e}")
+            return None
+
     async def scroll_job_list(self) -> List[ScrapingResult]:
         """Scroll through the job list and collect job data"""
         logger.info("Scrolling through job list container...")
@@ -111,7 +203,7 @@ class LinkedInJobScraper:
         
         while len(self.job_data) < self.search_config.num_jobs:
             current_cards = await self._page.locator("li.scaffold-layout__list-item").all()
-            
+
             if not current_cards:
                 logger.warning("⚠️ No job cards found yet. Waiting...")
                 await asyncio.sleep(1)
@@ -121,30 +213,17 @@ class LinkedInJobScraper:
                 if len(self.job_data) >= self.search_config.num_jobs:
                     break
 
-                try:
-                    await card.scroll_into_view_if_needed()
-                    await card.click(timeout=5000, force=True)
-                    await self._page.wait_for_timeout(1000)
+                result = await self.process_job_card(card)
+                if result:
+                    self.job_data.append(result)
+                    logger.info(f"Scraped job {len(self.job_data)}/{self.search_config.num_jobs}: '{result.job_title}' at '{result.company_name}'")
 
-                    current_url = self._page.url
-                    job_id = None
-                    if "currentJobId=" in current_url:
-                        job_id = current_url.split("currentJobId=")[-1].split("&")[0]
-
-                    self.job_data.append(ScrapingResult(
-                        job_id=job_id or "",
-                        url=current_url
-                    ))
-                    logger.info(f"Scraped job {len(self.job_data)}/{self.search_config.num_jobs}")
-
-                except Exception as e:
-                    logger.error(f"Failed to process job card: {e}")
-
+            # Break if no new cards were found after processing the current set
             if len(current_cards) == len(job_cards):
                 break
 
             job_cards = current_cards
-            await asyncio.sleep(2)
+            await asyncio.sleep(2) # Wait a bit before trying to scroll more
 
         return self.job_data
 
@@ -157,9 +236,15 @@ class LinkedInJobScraper:
         filepath = os.path.join(self.output_dir, filename)
 
         with open(filepath, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["job_id", "url"])
+            writer = csv.DictWriter(f, fieldnames=["job_id", "url", "job_title", "company_name", "job_description"])
             writer.writeheader()
-            writer.writerows([{"job_id": job.job_id, "url": job.url} for job in self.job_data])
+            writer.writerows([{
+                "job_id": job.job_id,
+                "url": job.url,
+                "job_title": job.job_title,
+                "company_name": job.company_name,
+                "job_description": job.job_description
+            } for job in self.job_data])
 
         logger.info(f"✅ Saved {len(self.job_data)} jobs to: {filepath}")
 

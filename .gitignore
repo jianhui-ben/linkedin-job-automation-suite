@@ -18,6 +18,7 @@ linkedin_cookies.json
 results/
 screenshots/
 *.DS_Store
+.env
 
 
 # Logs
