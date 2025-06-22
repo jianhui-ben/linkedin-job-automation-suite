@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from utils import browser_utils
 import sqlite3
 from browser_use import BrowserSession
+import random
 
 
 # Configure logging
@@ -99,8 +100,8 @@ class LinkedInJobScraper:
 
     async def perform_search(self):
         """Perform the job search with configured parameters"""
-        await self._page.get_by_role("combobox", name="Search by title, skill, or").fill(
-            self.search_config.title
+        await self._page.get_by_role("combobox", name="Search by title, skill, or").type(
+            self.search_config.title, delay=random.randint(50, 150)
         )
         await self._page.get_by_role("combobox", name="City, state, or zip code").fill(
             self.search_config.location
@@ -172,7 +173,10 @@ class LinkedInJobScraper:
         """Process a single job card and extract all relevant information"""
         try:
             await card.scroll_into_view_if_needed()
+            await random_sleep(500, 1200)
             await card.click(timeout=5000, force=True)
+            await random_sleep(1000, 2500)
+            await human_scroll(self._page, steps=random.randint(3, 7))
             await self._page.wait_for_timeout(1000) # Give page time to load content after click
 
             current_url = self._page.url
@@ -220,7 +224,7 @@ class LinkedInJobScraper:
 
             if not current_cards:
                 logger.warning("⚠️ No job cards found yet. Waiting...")
-                await asyncio.sleep(1)
+                await random_sleep()
                 continue
 
             for card in current_cards:
@@ -237,7 +241,7 @@ class LinkedInJobScraper:
                 break
 
             job_cards = current_cards
-            await asyncio.sleep(2) # Wait a bit before trying to scroll more
+            await random_sleep() # Wait a bit before trying to scroll more
 
         return self.job_data
 
@@ -333,12 +337,20 @@ class LinkedInJobScraper:
             logger.error(f"An error occurred during scraping: {e}")
             raise
 
+async def random_sleep(min_ms=800, max_ms=2000):
+    await asyncio.sleep(random.uniform(min_ms, max_ms) / 1000)
+
+async def human_scroll(page, steps=10):
+    for _ in range(steps):
+        await page.mouse.wheel(0, random.randint(200, 600))
+        await random_sleep(300, 800)
+
 async def main():
     # Example usage
     search_config = SearchConfig(
         title="product manager",
         location="United States",
-        num_jobs=1
+        num_jobs=10
     )
     
     async with LinkedInJobScraper(
