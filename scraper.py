@@ -1,14 +1,12 @@
 import asyncio
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext
-import os
-import json
 from datetime import datetime
-import csv
 from typing import List, Optional
 import logging
 from dataclasses import dataclass
 from utils import browser_utils
 import sqlite3
+from browser_use import BrowserSession
 
 
 # Configure logging
@@ -41,8 +39,8 @@ class ScrapingResult:
 class LinkedInJobScraper:
     """A class to scrape LinkedIn job listings"""
     
-    def __init__(self, cookie_file: str, search_config: SearchConfig, 
-                 headless: bool = False, output_dir: str = "results"):
+    def __init__(self, search_config: SearchConfig, 
+                 cookie_file: str = None, headless: bool = False, output_dir: str = "results", profile_name: str = None):
         self.cookie_file = cookie_file
         self.search_config = search_config
         self.headless = headless
@@ -51,6 +49,8 @@ class LinkedInJobScraper:
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
+        self.profile_name = profile_name  # profile name for browser-use (all available ones should be in ~/.config/browseruse/profiles/)
+        self._browser_session: Optional[BrowserSession] = None  # browser_user session
         self._db_conn: Optional[sqlite3.Connection] = None  # Database connection
         self._db_cursor: Optional[sqlite3.Cursor] = None    # Database cursor
         self.table_name: str = "" # To store the dynamically generated table name
@@ -69,14 +69,27 @@ class LinkedInJobScraper:
 
     async def initialize(self):
         """Initialize the browser and context"""
-        self._browser, self._context, self._page = await browser_utils.initialize_browser(
-            cookie_file=self.cookie_file,
-            headless=self.headless
-        )
+        if self.profile_name:
+            self._browser_session, self._page = await browser_utils.initialize_browser_with_profile(
+                profile_name=self.profile_name,
+                headless=self.headless
+            )
+            self._browser = None
+            self._context = None
+        elif self.cookie_file:
+            self._browser, self._context, self._page = await browser_utils.initialize_browser(
+                cookie_file=self.cookie_file,
+                headless=self.headless
+            )
+            self._browser_session = None
+        else:
+            raise ValueError("Either profile_name or cookie_file must be provided for authentication.")
 
     async def cleanup(self):
         """Clean up resources"""
-        if self._browser:
+        if self._browser_session:
+            await self._browser_session.stop()
+        elif self._browser:
             await self._browser.close()
 
     async def navigate_to_jobs_page(self):
@@ -325,11 +338,12 @@ async def main():
     search_config = SearchConfig(
         title="product manager",
         location="United States",
-        num_jobs=30
+        num_jobs=1
     )
     
     async with LinkedInJobScraper(
-        cookie_file="linkedin_cookies.json",
+        # cookie_file="linkedin_cookies.json",  // don't use the cookie directly
+        profile_name="yahoo_email_account",  # Use browser-use profile
         search_config=search_config,
         headless=False
     ) as scraper:

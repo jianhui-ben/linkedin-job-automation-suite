@@ -6,7 +6,9 @@ COOKIE_FILE = "linkedin_cookies.json"
 
 async def save_linkedin_cookies():
     async with async_playwright() as p:
+        # browser = await p.chromium.launch(channel="chrome", headless=False)
         browser = await p.chromium.launch(headless=False)
+
         context = await browser.new_context()
         page = await context.new_page()
 
