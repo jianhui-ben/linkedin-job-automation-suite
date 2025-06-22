@@ -7,7 +7,7 @@ An end-to-end automation system for job hunting on LinkedIn, powered by multiple
 ### 1. Job Scraper Agent
 - Automatically searches and collects job listings from LinkedIn
 - Filters jobs based on customizable criteria
-- Saves job data for further processing
+- Saves job data for further processing (now supports saving to SQLite database)
 
 ### 2. Resume Analysis Agent (Coming Soon)
 - Analyzes job descriptions
@@ -49,49 +49,71 @@ pip3 install -r requirements.txt
 
 ## Usage
 
-### Step 1: Save LinkedIn Cookies
+### Step 1: Save LinkedIn Cookies or Set Up a Browser Profile
 
-Before scraping, you need to save your LinkedIn cookies for authentication:
-
-1. Run the cookie saver script:
-```bash
-python3 save_linkedin_cookies.py
-```
-
-2. A browser window will open. Log in to your LinkedIn account.
-3. After successful login, the script will save your cookies to `linkedin_cookies.json`.
+Before scraping, you need to authenticate with LinkedIn. You can either:
+- Use cookies (see `save_linkedin_cookies.py`), or
+- Use a persistent browser profile (recommended for browser-use integration)
 
 ### Step 2: Scrape Jobs
 
-1. Run the scraper with your desired search parameters:
-```bash
-python3 scraper.py
+Run the scraper with your desired search parameters. Example:
+```python
+search_config = SearchConfig(
+    title="product manager",
+    location="United States",
+    num_jobs=100
+)
+
+async with LinkedInJobScraper(
+    # cookie_file="linkedin_cookies.json",  # Use this if using cookies
+    profile_name="your_browser_profile",     # Use this if using browser-use profile
+    search_config=search_config,
+    headless=False
+) as scraper:
+    await scraper.scrape()
 ```
 
 By default, the scraper will:
-- Search for "product manager" jobs
-- Look in "United States"
-- Scrape 100 jobs
-- Save results in the `results` directory
+- Search for your specified job title and location
+- Scrape the specified number of jobs
+- Save results in a SQLite database (`linkedin_jobs.db`)
 
-### Customizing the Search
+### Step 3: Query and Visualize Results with Query Client
 
-You can modify the search parameters in `scraper.py`:
+A command-line query client is provided to easily inspect and manage your scraped data.
 
-```python
-search_config = SearchConfig(
-    title="your job title",      # e.g., "software engineer"
-    location="your location",    # e.g., "San Francisco"
-    num_jobs=100,               # number of jobs to scrape
-    time_filter="Past 24 hours" # optional: time filter for jobs
-)
+#### List all tables:
+```bash
+python query_client.py list
+```
+
+#### Query a table (pretty print, truncates long job descriptions):
+```bash
+python query_client.py query <table_name> [limit]
+# Example:
+python query_client.py query jobs_product_manager_United_States 10
+```
+
+#### Purge (drop) a table:
+```bash
+python query_client.py purge <table_name>
+# Example:
+python query_client.py purge jobs_product_manager_United_States
 ```
 
 ## Output
 
-The scraper will create a CSV file in the `results` directory with the following format:
-- Filename: `linkedin_jobs_[title]_[location]_[timestamp].csv`
-- Columns: `job_id`, `url`
+- Scraped jobs are saved in a SQLite database (`linkedin_jobs.db`).
+- Each search run creates or updates a table named after the job title and location (e.g., `jobs_product_manager_United_States`).
+- Each row contains: `job_id`, `url`, `job_title`, `company_name`, `job_description`, `scraped_date`, `scraped_timestamp`.
+
+## Overall Flow
+
+1. **Authenticate** (via cookies or browser profile)
+2. **Run the scraper** to collect jobs and save to SQLite
+3. **Query or visualize results** using the query client
+4. (Optional) Purge tables you no longer need
 
 ## Future Features
 
