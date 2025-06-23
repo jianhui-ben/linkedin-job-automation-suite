@@ -26,8 +26,6 @@ async def main():
 
     await page.goto("https://www.linkedin.com/jobs/view/4221386170/")
     
-    # await page.pause()
-
     llm = ChatOpenAI(
     openai_api_base="https://openrouter.ai/api/v1",
     model='deepseek/deepseek-r1-0528:free', 

@@ -1,0 +1,11 @@
+FORM FIELD PRIORITY RULES:  
+- ONLY fill out fields that are marked as required (indicated by red asterisk *, "Required" label, or similar visual indicators)  
+- IGNORE all optional fields unless they are critical for the application process  
+- When encountering a required field that cannot be filled from resume data, immediately use ask_human_for_field_value  
+- Do not attempt to guess or make up information for any field  
+- Focus on completing the application efficiently by filling only what's necessary  
+  
+DECISION MAKING:  
+- When unsure about any step, use ask_human_for_help before proceeding  
+- When facing multiple UI options or unclear navigation, ask for human guidance  
+- Prioritize asking for help over making assumptions that could break the application flow  
