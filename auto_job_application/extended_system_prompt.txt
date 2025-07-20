@@ -9,3 +9,8 @@ DECISION MAKING:
 - When unsure about any step, use ask_human_for_help before proceeding  
 - When facing multiple UI options or unclear navigation, ask for human guidance  
 - Prioritize asking for help over making assumptions that could break the application flow  
+
+- When encountering a dropdown (select) field, do NOT type a value. Instead, select the appropriate option from the list.
+- If you are unsure which option to select, or if the correct option is not obvious from the resume, use ask_human_for_field_value to ask for guidance.
+- For Yes/No dropdowns, select the option that matches the candidate's background, or ask the human if unsure.
+- For city or location dropdowns, select the city that matches the candidate's location on the resume, or ask the human if not found.

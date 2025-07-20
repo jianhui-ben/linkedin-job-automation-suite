@@ -113,6 +113,182 @@ def ask_human_for_field_value(field_name: str, field_description: str = "") -> A
         include_in_memory=True
     )
 
+@controller.action('Smart dropdown handler - detects dropdown and selects option with human help if needed')  
+async def handle_dropdown_smart(index: int, browser_session: BrowserSession) -> ActionResult:  
+    """  
+    Intelligently handle dropdown selection:  
+    1. Detect if element is a dropdown  
+    2. Get available options  
+    3. Try to select based on context, or ask human for help  
+    """  
+    try:  
+        # First, get the element and verify it's a dropdown  
+        selector_map = await browser_session.get_selector_map()  
+        if index not in selector_map:  
+            return ActionResult(error=f'Element with index {index} not found in selector map')  
+          
+        dom_element = selector_map[index]  
+          
+        # Check if it's actually a select element  
+        if dom_element.tag_name.lower() != 'select':  
+            return ActionResult(  
+                extracted_content=f'Element at index {index} is not a dropdown (tag: {dom_element.tag_name})',  
+                include_in_memory=True  
+            )  
+          
+        # Get all available options using the existing built-in action  
+        page = await browser_session.get_current_page()  
+          
+        # Extract dropdown options using similar logic to get_dropdown_options  
+        all_options = []  
+        for frame in page.frames:  
+            try:  
+                options = await frame.evaluate(  
+                    """  
+                    (xpath) => {  
+                        const select = document.evaluate(xpath, document, null,  
+                            XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;  
+                        if (!select) return null;  
+                          
+                        return {  
+                            options: Array.from(select.options).map(opt => ({  
+                                text: opt.text,  
+                                value: opt.value,  
+                                index: opt.index  
+                            })),  
+                            id: select.id,  
+                            name: select.name,  
+                            currentValue: select.value  
+                        };  
+                    }  
+                    """,  
+                    dom_element.xpath,  
+                )  
+                  
+                if options:  
+                    all_options = options['options']  
+                    dropdown_info = {  
+                        'id': options['id'],  
+                        'name': options['name'],  
+                        'currentValue': options['currentValue']  
+                    }  
+                    break  
+                      
+            except Exception as frame_e:  
+                logger.debug(f'Frame evaluation failed: {str(frame_e)}')  
+                continue  
+          
+        if not all_options:  
+            return ActionResult(error=f'Could not retrieve options for dropdown at index {index}')  
+          
+        # Format options for human display  
+        options_text = "\n".join([f"{i}: {opt['text']}" for i, opt in enumerate(all_options)])  
+          
+        # Ask human to select which option  
+        question = f"""  
+Found dropdown with {len(all_options)} options:  
+{options_text}  
+  
+Current selection: {dropdown_info.get('currentValue', 'None')}  
+Dropdown ID: {dropdown_info.get('id', 'N/A')}  
+Dropdown Name: {dropdown_info.get('name', 'N/A')}  
+  
+Which option should I select? Please provide either:  
+- The option number (0, 1, 2, etc.)  
+- The exact text of the option  
+- 'skip' to leave unchanged  
+"""  
+          
+        print(f"\n🤖 DROPDOWN SELECTION NEEDED:")  
+        print("=" * 60)  
+        print(question)  
+        print("=" * 60)  
+        human_choice = input("👤 Your choice: ").strip()  
+          
+        # Process human input  
+        if human_choice.lower() == 'skip':  
+            return ActionResult(  
+                extracted_content=f'Skipped dropdown selection at index {index} as requested',  
+                include_in_memory=True  
+            )  
+          
+        # Try to parse as option index first  
+        selected_option = None  
+        try:  
+            option_index = int(human_choice)  
+            if 0 <= option_index < len(all_options):  
+                selected_option = all_options[option_index]  
+        except ValueError:  
+            # Not a number, try to match by text  
+            for opt in all_options:  
+                if opt['text'].strip().lower() == human_choice.lower():  
+                    selected_option = opt  
+                    break  
+          
+        if not selected_option:  
+            return ActionResult(  
+                error=f'Could not find option matching "{human_choice}". Please try again.',  
+                include_in_memory=True  
+            )  
+          
+        # Now select the option using similar logic to select_dropdown_option  
+        selected_text = selected_option['text']  
+          
+        for frame in page.frames:  
+            try:  
+                # Use Playwright's select_option method  
+                selected_values = await frame.locator(f'//{dom_element.xpath}').nth(0).select_option(  
+                    label=selected_text,   
+                    timeout=2000  
+                )  
+                  
+                msg = f'Successfully selected "{selected_text}" from dropdown at index {index}'  
+                logger.info(msg)  
+                return ActionResult(  
+                    extracted_content=msg,  
+                    include_in_memory=True  
+                )  
+                  
+            except Exception as frame_e:  
+                logger.debug(f'Frame selection failed: {str(frame_e)}')  
+                continue  
+          
+        return ActionResult(  
+            error=f'Failed to select option "{selected_text}" in dropdown at index {index}',  
+            include_in_memory=True  
+        )  
+          
+    except Exception as e:  
+        logger.error(f'Error in smart dropdown handler: {str(e)}')  
+        return ActionResult(  
+            error=f'Smart dropdown handler failed: {str(e)}',  
+            include_in_memory=True  
+        )
+    
+@controller.action('Check if element is a dropdown and get basic info')  
+async def check_if_dropdown(index: int, browser_session: BrowserSession) -> ActionResult:  
+    """Check if an element is a dropdown and return basic information"""  
+    try:  
+        selector_map = await browser_session.get_selector_map()  
+        if index not in selector_map:  
+            return ActionResult(error=f'Element with index {index} not found')  
+          
+        dom_element = selector_map[index]  
+          
+        if dom_element.tag_name.lower() == 'select':  
+            return ActionResult(  
+                extracted_content=f'Element at index {index} IS a dropdown (select element)',  
+                include_in_memory=True  
+            )  
+        else:  
+            return ActionResult(  
+                extracted_content=f'Element at index {index} is NOT a dropdown (tag: {dom_element.tag_name})',  
+                include_in_memory=True  
+            )  
+              
+    except Exception as e:  
+        return ActionResult(error=f'Failed to check element: {str(e)}')
+
 # --- Main Application Class ---
 class JobApplicationAgent:
     def __init__(self, job_urls: List[str], profile_name: str = "default"):
